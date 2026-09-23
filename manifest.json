@@ -1,8 +1,10 @@
 {
-    "name": "Memory Book (Smart)",
-    "description": "Автоматический архивариус сюжета и фактов о персонажах. Ведет три раздела памяти через изолированные фоновые запросы к ИИ, не ломая отыгрыш.",
-    "version": "1.0.0",
-    "author": "Hermes",
-    "main": "index.js",
-    "st_version_min": "1.10.0"
+    "display_name": "Smart Memory Book",
+    "loading_order": 55,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Hermes & User",
+    "version": "1.0.0"
 }
