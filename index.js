@@ -351,34 +351,115 @@ ${recentMessages}
         let rawResponse = '';
 
         if (s.apiUrl && s.apiKey) {
+            const bodyPayload = {
+                model: s.model || 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: s.systemPrompt },
+                    { role: 'user', content: promptText }
+                ],
+                temperature: 0.2
+            };
+            // Включаем строгий JSON режим если поддерживается
+            try {
+                bodyPayload.response_format = { type: 'json_object' };
+            } catch (e) {}
+
             const res = await fetch(s.apiUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${s.apiKey}`
                 },
-                body: JSON.stringify({
-                    model: s.model || 'gpt-4o-mini',
-                    messages: [
-                        { role: 'system', content: s.systemPrompt },
-                        { role: 'user', content: promptText }
-                    ],
-                    temperature: 0.3
-                })
+                body: JSON.stringify(bodyPayload)
             });
             const json = await res.json();
             rawResponse = json.choices?.[0]?.message?.content || '';
         } else {
-            rawResponse = await generateQuietPrompt(
-                `${s.systemPrompt}\n\n${promptText}`,
-                false,
-                true
-            );
+            // Поддержка схемы для SillyTavern generateQuietPrompt
+            const jsonSchema = {
+                name: 'MemoryBookSchema',
+                strict: true,
+                value: {
+                    type: 'object',
+                    properties: {
+                        plot: { type: 'string' },
+                        user: { type: 'string' },
+                        other: { type: 'string' }
+                    },
+                    required: ['plot', 'user', 'other']
+                }
+            };
+
+            try {
+                rawResponse = await generateQuietPrompt({
+                    quietPrompt: `${s.systemPrompt}\n\n${promptText}\n\nВАЖНО: Ответ начинай сразу со скобки { и закончи скобкой }. Только валидный JSON.`,
+                    jsonSchema: jsonSchema
+                });
+            } catch (schemaErr) {
+                rawResponse = await generateQuietPrompt(
+                    `${s.systemPrompt}\n\n${promptText}\n\nВАЖНО: Ответ начинай сразу со скобки { и закончи скобкой }. Только валидный JSON.`,
+                    false,
+                    true
+                );
+            }
         }
 
-        const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
+        if (typeof rawResponse !== 'string') {
+            rawResponse = JSON.stringify(rawResponse || '');
+        }
+
+        // Очищаем от Markdown блоков типа ```json ... ```
+        let cleanText = rawResponse.trim();
+        cleanText = cleanText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
+        let parsed = null;
+
+        // Попытка 1: прямой JSON.parse
+        try {
+            parsed = JSON.parse(cleanText);
+        } catch (e) {
+            // Попытка 2: поиск первого {...} блока
+            const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    parsed = JSON.parse(jsonMatch[0]);
+                } catch (e2) {
+                    console.warn('[Smart Memory Book] Ошибка прямого JSON.parse, пробуем мягкое извлечение полей:', e2);
+                }
+            }
+        }
+
+        // Попытка 3 (Fallback): извлечение ключей регулярками, если модель вернула слегка битый JSON или текст
+        if (!parsed || typeof parsed !== 'object') {
+            const extractField = (fieldName) => {
+                const patterns = [
+                    new RegExp(`"${fieldName}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 'i'),
+                    new RegExp(`'${fieldName}'\\s*:\\s*'((?:\\\\.|[^'\\\\])*)'`, 'i'),
+                    new RegExp(`\\[?(?:${fieldName}|${fieldName === 'plot' ? 'Сюжет' : fieldName === 'user' ? 'User' : 'Мир и NPC'})\\]?\\s*[:=-]\\s*(.+?)(?=\\n\\[|\\n"[a-z]+"|\\n\\}|$)`, 'is')
+                ];
+                for (const p of patterns) {
+                    const m = cleanText.match(p);
+                    if (m && m[1]) {
+                        return m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').trim();
+                    }
+                }
+                return null;
+            };
+
+            const plotExtracted = extractField('plot');
+            const userExtracted = extractField('user');
+            const otherExtracted = extractField('other');
+
+            if (plotExtracted !== null || userExtracted !== null || otherExtracted !== null) {
+                parsed = {
+                    plot: plotExtracted || s.data.plot || '',
+                    user: userExtracted || s.data.user || '',
+                    other: otherExtracted || s.data.other || ''
+                };
+            }
+        }
+
+        if (parsed && typeof parsed === 'object') {
             if (parsed.plot !== undefined) s.data.plot = parsed.plot;
             if (parsed.user !== undefined) s.data.user = parsed.user;
             if (parsed.other !== undefined) s.data.other = parsed.other;
